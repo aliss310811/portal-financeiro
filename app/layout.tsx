@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./financeiro.css";
 
 export const metadata: Metadata = {
   title: "Painel Financeiro Alisson",

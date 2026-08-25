@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 type Client = { cliente_id:string; razao_social:string; nome_fantasia:string; cnpj:string; email_principal:string; status:string; valor_mensal:string; dia_vencimento:string };
-type Charge = { cobranca_id:string; cliente_id:string; competencia:string; descricao:string; valor:string; data_vencimento:string; link_pagamento:string; status:string; comprovante_url?:string };
+type Charge = { cobranca_id:string; cliente_id:string; competencia:string; descricao:string; valor:string; data_vencimento:string; order_nsu:string; link_pagamento:string; status:string; forma_pagamento?:string; comprovante_url?:string };
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://portal-alisson-api.onrender.com").replace(/\/$/, "");
 const currentCompetence = new Date().toISOString().slice(0, 7);
@@ -28,6 +28,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [notice, setNotice] = useState("");
+  const [manualMethods, setManualMethods] = useState<Record<string,string>>({});
 
   useEffect(() => { setKey(sessionStorage.getItem("financeiro_key") || ""); }, []);
   useEffect(() => { if (key) loadAll(); }, [key, competence]);
@@ -72,6 +73,25 @@ export default function Home() {
     } catch (error) { setNotice(error instanceof Error ? error.message : "Valor inválido"); }
   }
 
+  async function changeDueDay(client:Client, day:string) {
+    try {
+      await request(`/api/financeiro/clientes/${client.cliente_id}`, { method:"PATCH", body:JSON.stringify({ dia_vencimento:day }) });
+      setClients((items) => items.map((item) => item.cliente_id === client.cliente_id ? {...item, dia_vencimento:day} : item));
+      setSelected((current) => { const next = new Set(current); next.delete(client.cliente_id); return next; });
+      setNotice(`${client.nome_fantasia || client.razao_social} passou para o dia ${day}.`);
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Não foi possível alterar o vencimento"); }
+  }
+
+  async function confirmManual(charge:Charge) {
+    const method = manualMethods[charge.order_nsu] || "PIX";
+    if (!window.confirm(`Confirmar esta cobrança como paga por ${method.toLowerCase()}?`)) return;
+    try {
+      await request(`/api/financeiro/cobrancas/${encodeURIComponent(charge.order_nsu)}/pagamento-manual`, { method:"PATCH", body:JSON.stringify({ forma_pagamento:method }) });
+      setNotice("Pagamento confirmado manualmente.");
+      await loadAll();
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Não foi possível confirmar o pagamento"); }
+  }
+
   async function generateBatch() {
     setGenerating(true);
     try {
@@ -103,9 +123,9 @@ export default function Home() {
       <div className="metrics"><article><small>COBRANÇAS DO MÊS</small><strong>{charges.length}</strong><span>{competence}</span></article><article><small>EM ABERTO</small><strong>{open.length}</strong><span>Aguardando pagamento</span></article><article><small>PAGAS</small><strong>{paid.length}</strong><span>Confirmadas pela InfinitePay</span></article><article><small>VALOR LANÇADO</small><strong>{money(String(total))}</strong><span>Total da competência</span></article></div>
       <section className="batch-card" id="clientes"><div className="section-title"><div><p className="eyebrow">NOVO LOTE</p><h2>Gerar cobranças</h2></div><span className="selection-count">{selected.size ? `${selected.size} selecionado(s)` : `${filtered.length} cliente(s) no dia ${dueDay}`}</span></div><div className="controls"><label>Competência<input type="month" value={competence} onChange={(event) => setCompetence(event.target.value)} /></label><fieldset><legend>Vencimento cadastrado</legend><label className={dueDay === 10 ? "choice checked" : "choice"}><input type="radio" checked={dueDay === 10} onChange={() => {setDueDay(10);setSelected(new Set());}} /> Dia 10</label><label className={dueDay === 28 ? "choice checked" : "choice"}><input type="radio" checked={dueDay === 28} onChange={() => {setDueDay(28);setSelected(new Set());}} /> Dia 28</label></fieldset><button className="primary" onClick={generateBatch} disabled={generating || (!selected.size && !filtered.length)}>{generating ? "Gerando…" : selected.size ? `Gerar ${selected.size} cobrança(s)` : `Gerar todos do dia ${dueDay}`}</button></div>
         <div className="table-tools"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar cliente, CNPJ ou código"/><button className="text-button" onClick={() => setSelected(new Set(filtered.map((client) => client.cliente_id)))}>Selecionar visíveis</button><button className="text-button" onClick={() => setSelected(new Set())}>Limpar</button></div>
-        <div className="table-wrap"><table><thead><tr><th></th><th>Cliente</th><th>CNPJ</th><th>Valor mensal</th><th></th></tr></thead><tbody>{filtered.map((client) => <tr key={client.cliente_id}><td><input aria-label={`Selecionar ${client.cliente_id}`} type="checkbox" checked={selected.has(client.cliente_id)} onChange={() => toggle(client.cliente_id)} /></td><td><strong>{client.nome_fantasia || client.razao_social}</strong><small>{client.cliente_id}</small></td><td>{client.cnpj || "—"}</td><td><div className="money-input"><span>R$</span><input value={client.valor_mensal || ""} onChange={(event) => setClients((items) => items.map((item) => item.cliente_id === client.cliente_id ? {...item, valor_mensal:event.target.value} : item))} placeholder="0,00" /></div></td><td><button className="save" onClick={() => saveValue(client)}>Salvar</button></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">Nenhum cliente encontrado.</div>}</div>
+        <div className="table-wrap"><table><thead><tr><th></th><th>Cliente</th><th>CNPJ</th><th>Valor mensal</th><th>Dia</th><th></th></tr></thead><tbody>{filtered.map((client) => <tr key={client.cliente_id}><td><input aria-label={`Selecionar ${client.cliente_id}`} type="checkbox" checked={selected.has(client.cliente_id)} onChange={() => toggle(client.cliente_id)} /></td><td><strong>{client.nome_fantasia || client.razao_social}</strong><small>{client.cliente_id}</small></td><td>{client.cnpj || "—"}</td><td><div className="money-input"><span>R$</span><input value={client.valor_mensal || ""} onChange={(event) => setClients((items) => items.map((item) => item.cliente_id === client.cliente_id ? {...item, valor_mensal:event.target.value} : item))} placeholder="0,00" /></div></td><td><select className="day-select" value={client.dia_vencimento} onChange={(event) => changeDueDay(client,event.target.value)}><option value="10">Dia 10</option><option value="28">Dia 28</option></select></td><td><button className="save" onClick={() => saveValue(client)}>Salvar valor</button></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">Nenhum cliente encontrado.</div>}</div>
       </section>
-      <section className="history" id="historico"><div className="section-title"><div><p className="eyebrow">ACOMPANHAMENTO</p><h2>Histórico da competência</h2></div></div><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Link</th></tr></thead><tbody>{charges.map((charge) => <tr key={charge.cobranca_id}><td><strong>{clients.find((client) => client.cliente_id === charge.cliente_id)?.nome_fantasia || charge.cliente_id}</strong><small>{charge.cliente_id}</small></td><td>{datePt(charge.data_vencimento)}</td><td>{money(charge.valor)}</td><td><span className={`status ${charge.status === "PAGO" ? "paid" : "open"}`}>{charge.status}</span></td><td><a className="link" href={charge.link_pagamento} target="_blank" rel="noreferrer">Abrir cobrança</a></td></tr>)}</tbody></table>{!charges.length && <div className="empty">Nenhuma cobrança gerada para esta competência.</div>}</div></section>
+      <section className="history" id="historico"><div className="section-title"><div><p className="eyebrow">ACOMPANHAMENTO</p><h2>Histórico da competência</h2></div></div><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Pagamento</th><th>Link</th></tr></thead><tbody>{charges.map((charge) => <tr key={charge.cobranca_id}><td><strong>{clients.find((client) => client.cliente_id === charge.cliente_id)?.nome_fantasia || charge.cliente_id}</strong><small>{charge.cliente_id}</small></td><td>{datePt(charge.data_vencimento)}</td><td>{money(charge.valor)}</td><td><span className={`status ${charge.status === "PAGO" ? "paid" : "open"}`}>{charge.status}</span>{charge.forma_pagamento && <small>{charge.forma_pagamento}</small>}</td><td>{charge.status === "PAGO" ? <span className="paid-label">Confirmado</span> : <div className="manual-pay"><select value={manualMethods[charge.order_nsu] || "PIX"} onChange={(event) => setManualMethods((items) => ({...items,[charge.order_nsu]:event.target.value}))}><option value="PIX">Pix</option><option value="DEPOSITO">Depósito</option><option value="TRANSFERENCIA">Transferência</option><option value="DINHEIRO">Dinheiro</option><option value="OUTRO">Outro</option></select><button onClick={() => confirmManual(charge)}>Marcar pago</button></div>}</td><td><a className="link" href={charge.link_pagamento} target="_blank" rel="noreferrer">Abrir cobrança</a></td></tr>)}</tbody></table>{!charges.length && <div className="empty">Nenhuma cobrança gerada para esta competência.</div>}</div></section>
     </section>
   </main>;
 }
