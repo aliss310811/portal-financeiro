@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 type Client = { cliente_id:string; razao_social:string; nome_fantasia:string; cnpj:string; email_principal:string; status:string; valor_mensal:string; dia_vencimento:string; enviar_nota_email?:string };
+type AdjustmentRow = { cliente_id:string; nome:string; email?:string; anterior?:string; novo?:string; erro?:string; ok?:boolean; email_notificado?:boolean; email_motivo?:string };
 type Charge = { cobranca_id:string; cliente_id:string; competencia:string; descricao:string; valor:string; data_vencimento:string; order_nsu:string; link_pagamento:string; status:string; forma_pagamento?:string; comprovante_url?:string };
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL || "https://portal-alisson-api.onrender.com").replace(/\/$/, "");
@@ -29,6 +30,40 @@ export default function Home() {
   const [generating, setGenerating] = useState(false);
   const [notice, setNotice] = useState("");
   const [manualMethods, setManualMethods] = useState<Record<string,string>>({});
+
+  const [percent, setPercent] = useState("8");
+  const [preview, setPreview] = useState<{token:string; percentual:number; resultados:AdjustmentRow[]} | null>(null);
+  const [adjustmentResults, setAdjustmentResults] = useState<AdjustmentRow[]>([]);
+  const [extraBusy, setExtraBusy] = useState(false);
+
+  async function previewAdjustment() {
+    setExtraBusy(true); setPreview(null); setAdjustmentResults([]);
+    try { setPreview(await request("/api/financeiro/reajustes/previa", {method:"POST",body:JSON.stringify({percentual:percent})})); }
+    catch(error) { setNotice(error instanceof Error ? error.message : "Falha na prévia"); }
+    finally { setExtraBusy(false); }
+  }
+  async function applyAdjustment() {
+    if (!preview || !window.confirm(`Aplicar ${preview.percentual}% aos clientes da prévia e enviar os avisos por e-mail?`)) return;
+    setExtraBusy(true);
+    try {
+      const data=await request("/api/financeiro/reajustes/aplicar", {method:"POST",body:JSON.stringify({token:preview.token})});
+      setAdjustmentResults(data.resultados); setPreview(null);
+      setNotice("Reajuste concluído. Confira abaixo os valores salvos e os resultados dos e-mails.");
+      await loadAll();
+    } catch(error) { setNotice(error instanceof Error ? error.message : "Falha ao aplicar reajuste"); }
+    finally { setExtraBusy(false); }
+  }
+  async function downloadDraft(charge:Charge) {
+    setExtraBusy(true);
+    try {
+      const data=await request(`/api/financeiro/cobrancas/${encodeURIComponent(charge.order_nsu)}/rascunho-nota`, {method:"POST",body:"{}"});
+      const url=URL.createObjectURL(new Blob([data.texto],{type:"text/plain;charset=utf-8"}));
+      const link=document.createElement("a"); link.href=url; link.download=data.nome; link.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+      setNotice("Rascunho salvo no Drive do cliente, em RASCUNHOS_NF, e baixado como .txt.");
+    } catch(error) { setNotice(error instanceof Error ? error.message : "Falha ao gerar rascunho"); }
+    finally { setExtraBusy(false); }
+  }
 
   useEffect(() => { setKey(sessionStorage.getItem("financeiro_key") || ""); }, []);
   useEffect(() => { if (key) loadAll(); }, [key, competence]);
@@ -125,7 +160,7 @@ export default function Home() {
   if (!key) return <main className="login-shell"><section className="login-card"><div className="brand-mark">AF</div><p className="eyebrow">ALISSON FINANÇAS</p><h1>Painel financeiro</h1><p className="muted">Acesso exclusivo da equipe de cobranças.</p><form onSubmit={login}><label>Senha de acesso<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Digite sua senha" autoFocus /></label><button type="submit">Entrar</button></form></section></main>;
 
   return <main className="app-shell">
-    <aside><div><div className="brand-mark">AF</div><strong>Alisson Finanças</strong><small>Financeiro</small></div><nav><a className="active">Cobranças</a><a href="#clientes">Clientes</a><a href="#historico">Histórico</a><a href="https://alisson-bio.netlify.app/calc12354495165491565491999515195195/" target="_blank" rel="noopener noreferrer">Criar proposta</a></nav><a className="mobile-proposal" href="https://alisson-bio.netlify.app/calc12354495165491565491999515195195/" target="_blank" rel="noopener noreferrer">Criar proposta</a><button className="ghost" onClick={logout}>Sair</button></aside>
+    <aside><div><div className="brand-mark">AF</div><strong>Alisson Finanças</strong><small>Financeiro</small></div><nav><a className="active">Cobranças</a><a href="#clientes">Clientes</a><a href="#historico">Histórico</a><a href="#reajustes">Reajustar valores</a><a href="https://alisson-bio.netlify.app/calc12354495165491565491999515195195/" target="_blank" rel="noopener noreferrer">Criar proposta</a></nav><a className="mobile-proposal" href="https://alisson-bio.netlify.app/calc12354495165491565491999515195195/" target="_blank" rel="noopener noreferrer">Criar proposta</a><button className="ghost" onClick={logout}>Sair</button></aside>
     <section className="content">
       <header><div><p className="eyebrow">GESTÃO DE RECEBIMENTOS</p><h1>Cobranças mensais</h1><p className="muted">Gere e acompanhe os links enviados ao portal dos clientes.</p></div><button className="secondary" onClick={loadAll} disabled={loading}>{loading ? "Atualizando…" : "Atualizar"}</button></header>
       {notice && <div className="notice" role="status"><span>{notice}</span><button onClick={() => setNotice("")}>×</button></div>}
@@ -134,7 +169,14 @@ export default function Home() {
         <div className="table-tools"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar cliente, CNPJ ou código"/><button className="text-button" onClick={() => setSelected(new Set(filtered.map((client) => client.cliente_id)))}>Selecionar visíveis</button><button className="text-button" onClick={() => setSelected(new Set())}>Limpar</button></div>
         <div className="table-wrap"><table><thead><tr><th></th><th>Cliente</th><th>CNPJ</th><th>Valor mensal</th><th>Dia</th><th>Enviar NFS-e</th><th></th></tr></thead><tbody>{filtered.map((client) => <tr key={client.cliente_id}><td><input aria-label={`Selecionar ${client.cliente_id}`} type="checkbox" checked={selected.has(client.cliente_id)} onChange={() => toggle(client.cliente_id)} /></td><td><strong>{client.nome_fantasia || client.razao_social}</strong><small>{client.cliente_id}</small></td><td>{client.cnpj || "—"}</td><td><div className="money-input"><span>R$</span><input value={client.valor_mensal || ""} onChange={(event) => setClients((items) => items.map((item) => item.cliente_id === client.cliente_id ? {...item, valor_mensal:event.target.value} : item))} placeholder="0,00" /></div></td><td><select className="day-select" value={client.dia_vencimento || ""} onChange={(event) => changeDueDay(client,event.target.value)}><option value="" disabled>Definir</option><option value="10">Dia 10</option><option value="28">Dia 28</option></select></td><td><select aria-label={`Envio de nota para ${client.nome_fantasia || client.razao_social}`} value={client.enviar_nota_email || ""} onChange={(event) => changeInvoiceEmail(client,event.target.value === "SIM")}><option value="" disabled>Definir</option><option value="SIM">Sim</option><option value="NAO">Não</option></select></td><td><button className="save" onClick={() => saveValue(client)}>Salvar valor</button></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">Nenhum cliente encontrado.</div>}</div>
       </section>
-      <section className="history" id="historico"><div className="section-title"><div><p className="eyebrow">ACOMPANHAMENTO</p><h2>Histórico da competência</h2></div></div><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Pagamento</th><th>Link</th></tr></thead><tbody>{charges.map((charge) => <tr key={charge.cobranca_id}><td><strong>{clients.find((client) => client.cliente_id === charge.cliente_id)?.nome_fantasia || charge.cliente_id}</strong><small>{charge.cliente_id}</small></td><td>{datePt(charge.data_vencimento)}</td><td>{money(charge.valor)}</td><td><span className={`status ${charge.status === "PAGO" ? "paid" : "open"}`}>{charge.status}</span>{charge.forma_pagamento && <small>{charge.forma_pagamento}</small>}</td><td>{charge.status === "PAGO" ? <span className="paid-label">Confirmado</span> : <div className="manual-pay"><select value={manualMethods[charge.order_nsu] || "PIX"} onChange={(event) => setManualMethods((items) => ({...items,[charge.order_nsu]:event.target.value}))}><option value="PIX">Pix</option><option value="DEPOSITO">Depósito</option><option value="TRANSFERENCIA">Transferência</option><option value="DINHEIRO">Dinheiro</option><option value="OUTRO">Outro</option></select><button onClick={() => confirmManual(charge)}>Marcar pago</button></div>}</td><td><a className="link" href={charge.link_pagamento} target="_blank" rel="noreferrer">Abrir cobrança</a></td></tr>)}</tbody></table>{!charges.length && <div className="empty">Nenhuma cobrança gerada para esta competência.</div>}</div></section>
+      <section className="batch-card" id="reajustes">
+        <div className="section-title"><div><p className="eyebrow">ATUALIZAÇÃO DE HONORÁRIOS</p><h2>Reajustar valores dos clientes</h2></div></div>
+        <p className="muted">Aplica o percentual a todos os clientes ativos com valor mensal válido, nos dois vencimentos. A próxima cobrança gerada usará o novo valor. Cobranças existentes mantêm o valor original.</p>
+        <div className="controls"><label>Reajuste (%)<input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={event=>{setPercent(event.target.value);setPreview(null);}} /></label><button onClick={previewAdjustment} disabled={extraBusy}>{extraBusy ? "Processando…" : "Ver prévia do reajuste"}</button></div>
+        {preview && <><p>Prévia de {preview.percentual}%. Os avisos serão enviados ao e-mail principal cadastrado.</p><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>E-mail do aviso</th><th>Valor atual</th><th>Novo valor</th></tr></thead><tbody>{preview.resultados.map(row=><tr key={row.cliente_id}><td>{row.nome}<small>{row.cliente_id}</small></td><td>{row.email || "Sem e-mail cadastrado"}</td><td>{row.anterior ? money(row.anterior) : "—"}</td><td>{row.erro || money(row.novo || "0")}</td></tr>)}</tbody></table></div><button onClick={applyAdjustment} disabled={extraBusy || !preview.resultados.some(row=>!row.erro)}>Aplicar reajuste e enviar avisos</button></>}
+        {!!adjustmentResults.length && <div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Reajuste</th><th>Aviso por e-mail</th></tr></thead><tbody>{adjustmentResults.map(row=><tr key={row.cliente_id}><td>{row.nome}<small>{row.cliente_id}</small></td><td>{row.ok ? `Salvo: ${money(row.novo || "0")}` : row.erro || "Não aplicado"}</td><td>{row.ok ? row.email_notificado ? "Enviado" : `Não enviado: ${row.email_motivo || "verificar configuração"}` : "—"}</td></tr>)}</tbody></table></div>}
+      </section>
+      <section className="history" id="historico"><div className="section-title"><div><p className="eyebrow">ACOMPANHAMENTO</p><h2>Histórico da competência</h2></div></div><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Pagamento</th><th>Link</th><th>Nota fiscal</th></tr></thead><tbody>{charges.map((charge) => <tr key={charge.cobranca_id}><td><strong>{clients.find((client) => client.cliente_id === charge.cliente_id)?.nome_fantasia || charge.cliente_id}</strong><small>{charge.cliente_id}</small></td><td>{datePt(charge.data_vencimento)}</td><td>{money(charge.valor)}</td><td><span className={`status ${charge.status === "PAGO" ? "paid" : "open"}`}>{charge.status}</span>{charge.forma_pagamento && <small>{charge.forma_pagamento}</small>}</td><td>{charge.status === "PAGO" ? <span className="paid-label">Confirmado</span> : <div className="manual-pay"><select value={manualMethods[charge.order_nsu] || "PIX"} onChange={(event) => setManualMethods((items) => ({...items,[charge.order_nsu]:event.target.value}))}><option value="PIX">Pix</option><option value="DEPOSITO">Depósito</option><option value="TRANSFERENCIA">Transferência</option><option value="DINHEIRO">Dinheiro</option><option value="OUTRO">Outro</option></select><button onClick={() => confirmManual(charge)}>Marcar pago</button></div>}</td><td><a className="link" href={charge.link_pagamento} target="_blank" rel="noreferrer">Abrir cobrança</a></td><td><button className="save" disabled={extraBusy} onClick={()=>downloadDraft(charge)}>Baixar rascunho .txt</button></td></tr>)}</tbody></table>{!charges.length && <div className="empty">Nenhuma cobrança gerada para esta competência.</div>}</div></section>
     </section>
   </main>;
 }
